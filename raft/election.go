@@ -11,8 +11,10 @@ import (
 )
 
 type RequestVoteArgs struct {
-	Term        int
-	CandidateID string
+	Term         int
+	CandidateID  string
+	LastLogIndex int
+	LastLogTerm  int
 }
 
 type RequestVoteReply struct {
@@ -26,8 +28,8 @@ const (
 )
 
 func (n *Node) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) error {
-	n.mu.Lock()
-	defer n.mu.Unlock()
+	n.Mu.Lock()
+	defer n.Mu.Unlock()
 
 	if args.Term < n.CurrentTerm {
 		reply.Term = n.CurrentTerm
@@ -41,6 +43,17 @@ func (n *Node) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) error
 		n.State = Follower
 	}
 
+	lastLogIndex := len(n.Log) - 1
+	lastLogTerm := 0
+	if lastLogIndex >= 0 {
+		lastLogTerm = n.Log[lastLogIndex].Term
+	}
+	if args.LastLogTerm < lastLogTerm ||
+		(args.LastLogTerm == lastLogTerm && args.LastLogIndex < lastLogIndex) {
+		// Candidate's log is less up-to-date
+		reply.VoteGranted = false
+		return nil
+	}
 	if n.VotedFor == "" || n.VotedFor == args.CandidateID {
 		fmt.Printf("[%s] 🔄 🔄 🔄 🔄 granting vote to %s in term %d\n", n.ID, args.CandidateID, args.Term)
 		n.VotedFor = args.CandidateID
@@ -67,12 +80,12 @@ func (n *Node) ResetElectionTimer() {
 }
 
 func (n *Node) startElection() {
-	n.mu.Lock()
+	n.Mu.Lock()
 	n.State = Candidate
 	n.CurrentTerm++
 	n.VotedFor = n.ID
 	term := n.CurrentTerm
-	n.mu.Unlock()
+	n.Mu.Unlock()
 	fmt.Printf("[%s] 💣 💣 💣 💣 starting election for term %d\n", n.ID, term)
 	var votes int32 = 1
 	var wg sync.WaitGroup
@@ -80,9 +93,16 @@ func (n *Node) startElection() {
 		wg.Add(1)
 		go func(peerAddr string) {
 			defer wg.Done()
+			lastLogIndex := len(n.Log) - 1
+			lastLogTerm := 0
+			if lastLogIndex >= 0 {
+				lastLogTerm = n.Log[lastLogIndex].Term
+			}
 			args := RequestVoteArgs{
-				Term:        term,
-				CandidateID: n.ID,
+				Term:         term,
+				CandidateID:  n.ID,
+				LastLogIndex: lastLogIndex,
+				LastLogTerm:  lastLogTerm,
 			}
 			var reply RequestVoteReply
 
@@ -117,9 +137,16 @@ func (n *Node) startElection() {
 
 func (n *Node) becomeLeader() {
 
-	n.mu.Lock()
+	n.Mu.Lock()
 	n.State = Leader
-	n.mu.Unlock()
+	n.MatchIndex = make(map[string]int)
+	n.NextIndex = make(map[string]int)
+	lastIndex := len(n.Log)
+	for _, peer := range n.Peers {
+		n.MatchIndex[peer] = -1
+		n.NextIndex[peer] = lastIndex
+	}
+	n.Mu.Unlock()
 
 	go n.StartHeartbeatTicker()
 }

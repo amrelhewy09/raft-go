@@ -24,7 +24,7 @@ type LogEntry struct {
 type Node struct {
 	ID            string
 	Addr          string
-	mu            sync.Mutex
+	Mu            sync.Mutex
 	CurrentTerm   int
 	VotedFor      string
 	State         State
@@ -34,6 +34,10 @@ type Node struct {
 	LeaderID      string
 	LeaderAddr    string
 	CommitIndex   int
+	MatchIndex    map[string]int
+	NextIndex     map[string]int
+	LastApplied   int
+	StateMachine  map[string]string
 }
 
 func (n *Node) Ping(msg string, reply *string) error {

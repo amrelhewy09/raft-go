@@ -19,3 +19,7 @@ func (s *RaftService) AppendEntries(args *raft.AppendEntriesArgs, reply *raft.Ap
 func (s *RaftService) HandleClientCommand(args *raft.ClientCommandArgs, reply *raft.ClientCommandReply) error {
 	return s.Node.HandleClientCommand(args, reply)
 }
+
+func (s *RaftService) GetValue(args *raft.GetValueArgs, reply *raft.GetValueReply) error {
+	return s.Node.GetValue(args, reply)
+}

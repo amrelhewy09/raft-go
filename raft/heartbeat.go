@@ -21,10 +21,11 @@ type AppendEntriesReply struct {
 }
 
 func (n *Node) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply) error {
-	log.Printf("[%s] 📬 received heartbeat from leader %s (term %d)", n.ID, args.LeaderID, args.Term)
+	n.Mu.Lock()
+	defer n.Mu.Unlock()
 
-	n.mu.Lock()
-	defer n.mu.Unlock()
+	// log.Printf("[%s] 📬 received AppendEntries from leader %s (term %d) with %d entries",
+	// n.ID, args.LeaderID, args.Term, len(args.Entries))
 
 	if args.Term < n.CurrentTerm {
 		reply.Term = n.CurrentTerm
@@ -38,10 +39,40 @@ func (n *Node) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply)
 		n.VotedFor = ""
 	}
 
-	n.LeaderID = args.Addr
+	n.LeaderID = args.LeaderID
+	n.LeaderAddr = args.Addr
 	n.ResetElectionTimer()
-	reply.Term = n.CurrentTerm
+
+	if args.LeaderCommit > n.CommitIndex {
+		n.CommitIndex = min(args.LeaderCommit, len(n.Log)-1)
+		log.Printf("[%s] 📌 updated commit index to %d", n.ID, n.CommitIndex)
+	}
+
+	if args.PrevLogIndex >= 0 {
+		if args.PrevLogIndex >= len(n.Log) {
+			reply.Success = false
+			reply.Term = n.CurrentTerm
+			return nil
+		}
+
+		if n.Log[args.PrevLogIndex].Term != args.PrevLogTerm {
+			reply.Success = false
+			reply.Term = n.CurrentTerm
+			return nil
+		}
+	}
+
+	for i, entry := range args.Entries {
+		index := args.PrevLogIndex + 1 + i
+		if index < len(n.Log) {
+			continue
+		}
+		n.Log = append(n.Log, entry)
+		log.Printf("[%s] 📥 appended log entry at index %d: %v", n.ID, index, entry.Command)
+	}
+
 	reply.Success = true
+	reply.Term = n.CurrentTerm
 	return nil
 }
 
@@ -50,13 +81,13 @@ func (n *Node) StartHeartbeatTicker() {
 	defer ticker.Stop()
 
 	for {
-		n.mu.Lock()
+		n.Mu.Lock()
 		if n.State != Leader {
-			n.mu.Unlock()
+			n.Mu.Unlock()
 			return
 		}
 		term := n.CurrentTerm
-		n.mu.Unlock()
+		n.Mu.Unlock()
 
 		for _, peer := range n.Peers {
 			go func(peer string) {
@@ -67,9 +98,11 @@ func (n *Node) StartHeartbeatTicker() {
 				defer client.Close()
 
 				args := AppendEntriesArgs{
-					Term:     term,
-					LeaderID: n.ID,
-					Addr:     n.Addr,
+					Term:         term,
+					LeaderID:     n.ID,
+					Addr:         n.Addr,
+					Entries:      []LogEntry{},
+					LeaderCommit: n.CommitIndex,
 				}
 				var reply AppendEntriesReply
 				client.Call("Node.AppendEntries", &args, &reply)
