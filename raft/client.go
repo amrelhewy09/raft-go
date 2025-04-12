@@ -127,6 +127,5 @@ func (n *Node) tryCommit(entryIndex int) {
 	if count >= majority && n.CommitIndex < entryIndex {
 		n.CommitIndex = entryIndex
 		log.Printf("[%s] ✅ committed index %d!", n.ID, entryIndex)
-		n.ApplyToStateMachine(n.Log[entryIndex].Command.(string))
 	}
 }

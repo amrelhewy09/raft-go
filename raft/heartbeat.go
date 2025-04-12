@@ -24,9 +24,6 @@ func (n *Node) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply)
 	n.Mu.Lock()
 	defer n.Mu.Unlock()
 
-	// log.Printf("[%s] 📬 received AppendEntries from leader %s (term %d) with %d entries",
-	// n.ID, args.LeaderID, args.Term, len(args.Entries))
-
 	if args.Term < n.CurrentTerm {
 		reply.Term = n.CurrentTerm
 		reply.Success = false
@@ -64,11 +61,17 @@ func (n *Node) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply)
 
 	for i, entry := range args.Entries {
 		index := args.PrevLogIndex + 1 + i
+
 		if index < len(n.Log) {
-			continue
+			if n.Log[index].Term != entry.Term {
+				n.Log = n.Log[:index]
+				n.Log = append(n.Log, entry)
+				log.Printf("[%s] 🔄 replaced conflicting entry at index %d", n.ID, index)
+			}
+		} else {
+			n.Log = append(n.Log, entry)
+			log.Printf("[%s] 📥 appended log entry at index %d: %v", n.ID, index, entry.Command)
 		}
-		n.Log = append(n.Log, entry)
-		log.Printf("[%s] 📥 appended log entry at index %d: %v", n.ID, index, entry.Command)
 	}
 
 	reply.Success = true
@@ -96,16 +99,50 @@ func (n *Node) StartHeartbeatTicker() {
 					return
 				}
 				defer client.Close()
-
+				n.Mu.Lock()
+				nextIdx := n.NextIndex[peer]
+				prevLogIndex := nextIdx - 1
+				var prevLogTerm int
+				if prevLogIndex >= 0 && prevLogIndex < len(n.Log) {
+					prevLogTerm = n.Log[prevLogIndex].Term
+				}
+				entries := make([]LogEntry, len(n.Log[nextIdx:]))
+				copy(entries, n.Log[nextIdx:])
+				n.Mu.Unlock()
 				args := AppendEntriesArgs{
 					Term:         term,
 					LeaderID:     n.ID,
 					Addr:         n.Addr,
-					Entries:      []LogEntry{},
+					Entries:      entries,
 					LeaderCommit: n.CommitIndex,
+					PrevLogIndex: prevLogIndex,
+					PrevLogTerm:  prevLogTerm,
 				}
 				var reply AppendEntriesReply
 				client.Call("Node.AppendEntries", &args, &reply)
+				if err != nil {
+					log.Printf("[%s] ❌ could not connect to %s", n.ID, peer)
+					return
+				}
+				defer client.Close()
+				if err := client.Call("Node.AppendEntries", &args, &reply); err != nil {
+					log.Printf("[%s] ❌ AppendEntries RPC to %s failed", n.ID, peer)
+					return
+				}
+				n.Mu.Lock()
+				defer n.Mu.Unlock()
+				if reply.Success {
+					n.MatchIndex[peer] = prevLogIndex + len(entries)
+					n.NextIndex[peer] = n.MatchIndex[peer] + 1
+				} else {
+					if reply.Term > n.CurrentTerm {
+						n.CurrentTerm = reply.Term
+						n.State = Follower
+						n.VotedFor = ""
+						return
+					}
+					n.NextIndex[peer] = max(0, n.NextIndex[peer]-1)
+				}
 			}(peer)
 		}
 
